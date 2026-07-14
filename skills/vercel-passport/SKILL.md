@@ -26,10 +26,11 @@ provider shares them.
 ## Setup
 
 1. Passport must be enabled on the Vercel project (Project Settings >
-   Passport, an Enterprise feature). Team admins usually set a team default,
-   so new projects inherit it — if `getUser()` returns null on a deployed
-   app, this toggle is the first thing to check. There is nothing to install
-   or configure in code.
+   Passport, an Enterprise feature). When the team has a Passport default,
+   brand-new projects deploy already protected — nothing to enable per
+   project. If `getUser()` returns null on a deployed app, this toggle is
+   the first thing to check. There is nothing to install or configure in
+   code.
 
 2. Add the auth helper. Copy `assets/auth.ts` (next to this SKILL.md) into
    the project as `lib/auth.ts`, verbatim. If you can't locate the skill
@@ -75,6 +76,24 @@ Semantics worth knowing:
   is the stable identifier).
 - `getUser()` returning null on a deployed app means Passport is not enabled
   on that project — it is not a code problem.
+
+## What's in the token (verified on a live Passport deployment)
+
+`user.claims` contains the full token payload. Claims you can use beyond
+`external_sub`/`email`/`name`:
+
+| Claim | Example | Notes |
+|---|---|---|
+| `environment` | `"production"` | Or `"preview"` — which deployment the visitor is on |
+| `project`, `owner` | project and team slugs | Handy for logging |
+| `email_verified` | `true` | Only when the identity provider shares it |
+| `sub` | `owner:<team_id>:connector:<connector_id>:principal:<external_sub>` | Vercel's composite id; prefer `external_sub` |
+| `iss` | `https://passport.vercel.com/<team-slug>` | |
+| `iat`, `exp` | ~12 hours apart | Vercel manages session renewal; read identity per request, don't cache it across sessions |
+
+The authorization request to the identity provider asks for the
+`openid email profile` scopes, so providers like Okta typically do share
+email and name — but keep the null-safe rendering anyway.
 
 ## Recipes
 
