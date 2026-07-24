@@ -1,205 +1,256 @@
 ---
 name: vercel-passport
-description: Add the auth layer to an app deployed behind Vercel Passport. Use whenever the app needs login, sign-in, the current user, protected routes, or per-user data and it deploys on a Vercel Enterprise team with Passport — the platform authenticates every visitor at the edge, so the app only reads a verified identity header. Never build login pages, OAuth flows, or password storage for these apps.
+description: Add authentication and per-user authorization to applications deployed behind Vercel Passport. Use when an application on a Vercel Enterprise team needs sign-in, the current visitor, protected routes, per-user data, or identity-aware access. Use the official @vercel/passport package. Do not build a second login system for a Passport-protected application.
 ---
 
-# vercel-passport: auth without building auth
+# Vercel Passport
 
-Apps on this team deploy behind Vercel Passport. Passport authenticates every
-visitor against the organization's identity provider (Okta, Auth0, any OIDC
-provider) before a request ever reaches the app. By the time your code runs,
-the visitor is already signed in.
+Use Passport as the authentication layer for internal applications and agents.
+Passport authenticates the visitor before a request reaches the deployment.
+Application code reads the verified identity and applies its own authorization
+rules.
 
-So the entire auth layer of the app is: read the verified identity from a
-request header. Do not add NextAuth, Clerk, Better Auth, password forms,
-signup flows, or a users table for authentication. If a task says "add login"
-or "users should sign in", it is already done at the platform level — your job
-is only to use the identity.
+Follow the current official guide:
+[Read Passport identity in your application](https://vercel.com/docs/passport/read-identity).
+Treat that page and the installed `@vercel/passport` types as authoritative if
+the package changes.
 
-How the identity reaches you: Vercel injects a signed token into the
-`x-vercel-oidc-passport-token` request header on every authenticated request.
-Vercel strips any client-supplied value for that header, so on a protected
-deployment it can be trusted. The stable user id is the token's
-`external_sub` claim; email and name are present only if the identity
-provider shares them.
+## Set up
 
-## Setup
+1. Confirm that Passport protects the Vercel project. Passport is an Enterprise
+   feature configured by the team or project administrator.
 
-1. Passport must be enabled on the Vercel project (Project Settings >
-   Passport, an Enterprise feature). When the team has a Passport default,
-   brand-new projects deploy already protected — nothing to enable per
-   project. If `getUser()` returns null on a deployed app, this toggle is
-   the first thing to check. There is nothing to install or configure in
-   code.
-
-2. Add the auth helper. Copy `assets/auth.ts` (next to this SKILL.md) into
-   the project as `lib/auth.ts`, verbatim. If you can't locate the skill
-   folder, download the canonical copy:
+2. Install the official helper:
 
    ```bash
-   curl -fsSL -o lib/auth.ts https://raw.githubusercontent.com/remiconnesson/vercel-passport-skill/main/skills/vercel-passport/assets/auth.ts
+   pnpm add @vercel/passport
    ```
 
-3. For local dev (no Passport on localhost), add a pretend user to
-   `.env.local`:
+   Use the package manager already used by the project.
 
-   ```bash
-   PASSPORT_DEV_USER=you@example.com
+3. Read identity only in server-side code:
+
+   ```ts
+   import { getIdentity } from "@vercel/passport";
+
+   const identity = await getIdentity();
    ```
 
-   The fallback only activates in development builds; deployed apps never
-   use it.
+`getIdentity()` reads Vercel's request context, verifies the Passport token
+against Vercel's JWKS, and returns `null` when no identity is available. It can
+throw when token verification fails. Treat that request as unauthenticated.
 
-## API
+## Use the identity
 
 ```ts
-import { getUser, requireUser, getUserFromRequest, UnauthenticatedError } from "@/lib/auth";
+const identity = await getIdentity();
 
-const user = await getUser();        // PassportUser | null — server components, actions, route handlers
-const user = await requireUser();    // PassportUser — throws UnauthenticatedError when absent
-const user = getUserFromRequest(request); // framework-agnostic, for middleware/non-Next code
-
-user.id;      // stable id from the identity provider — key all per-user data by this
-user.email;   // string | null — only if the identity provider shares it
-user.name;    // string | null — same
-user.claims;  // every claim in the Passport token
-user.isDevFallback; // true when this is the PASSPORT_DEV_USER stand-in
+identity?.subject;          // Stable Passport subject for one issuer
+identity?.payload.iss;      // Passport issuer
+identity?.externalSubject;  // User id from the configured identity provider
+identity?.email;            // Optional
+identity?.name;             // Optional
+identity?.payload;          // Full verified claims
+identity?.verified;         // false for the local development fixture
 ```
 
-Semantics worth knowing:
+Use `identity.subject` as the visitor identifier when the application accepts
+one Passport issuer. If it accepts more than one Passport team, persist
+`identity.payload.iss` and `identity.subject` together.
 
-- Server-side only. The token header never reaches the browser; there is no
-  client-side "session". A client component that needs the user gets it as a
-  prop from a server component.
-- `email` and `name` are not guaranteed — render fallbacks (`user.name ??
-  user.email ?? "there"`), and never use email as a storage key (`user.id`
-  is the stable identifier).
-- `getUser()` returning null on a deployed app means Passport is not enabled
-  on that project — it is not a code problem.
+Do not parse `identity.subject`. Do not use `externalSubject`, email, or name as
+the application storage key. Passport scopes the subject to the Vercel team and
+Connector application. Profile fields depend on what the identity provider
+returns.
 
-## What's in the token (verified on a live Passport deployment)
+## Develop locally
 
-`user.claims` contains the full token payload. Claims you can use beyond
-`external_sub`/`email`/`name`:
+Passport runs in Vercel's network, so localhost does not receive the real
+Passport cookie or request header. In local development outside Vercel,
+`getIdentity()` returns a development identity by default and logs a warning.
+The fixture has `verified: false` and no token.
 
-| Claim | Example | Notes |
-|---|---|---|
-| `environment` | `"production"` | Or `"preview"` — which deployment the visitor is on |
-| `project`, `owner` | project and team slugs | Handy for logging |
-| `email_verified` | `true` | Only when the identity provider shares it |
-| `sub` | `owner:<team_id>:connector:<connector_id>:principal:<external_sub>` | Vercel's composite id; prefer `external_sub` |
-| `iss` | `https://passport.vercel.com/<team-slug>` | |
-| `iat`, `exp` | ~12 hours apart | Vercel manages session renewal; read identity per request, don't cache it across sessions |
+Customize its identifiers when application logic depends on them:
 
-The authorization request to the identity provider asks for the
-`openid email profile` scopes, so providers like Okta typically do share
-email and name — but keep the null-safe rendering anyway.
+```bash
+VERCEL_PASSPORT_DEV_OWNER=acme
+VERCEL_PASSPORT_DEV_OWNER_ID=team_123
+VERCEL_PASSPORT_DEV_PROJECT=my-project
+VERCEL_PASSPORT_DEV_PROJECT_ID=prj_123
+VERCEL_PASSPORT_DEV_CONNECTOR_ID=scl_dev
+VERCEL_PASSPORT_DEV_EXTERNAL_SUB=user_dev
+VERCEL_PASSPORT_DEV_EXTERNAL_ISS=https://idp.example.com
+```
+
+Disable the fixture when testing an unauthenticated request:
+
+```bash
+VERCEL_PASSPORT_DEV=0
+```
+
+Or disable it for one call:
+
+```ts
+const identity = await getIdentity(undefined, { development: false });
+```
+
+Test the real sign-in redirect, session cookie, injected header, and verified
+claims on a Passport-protected Vercel deployment.
 
 ## Recipes
 
-### Personalized server component
+### Personalize a server component
 
 ```tsx
-// app/page.tsx
-import { getUser } from "@/lib/auth";
+import { getIdentity } from "@vercel/passport";
 
 export default async function Home() {
-  const user = await getUser();
-  return <main>Welcome, {user?.name ?? user?.email ?? "there"}!</main>;
+  const identity = await getIdentity();
+  const displayName = identity?.name ?? identity?.email ?? "there";
+
+  return <main>Welcome, {displayName}!</main>;
 }
 ```
 
-### Route handler that requires a user
+Pass plain identity fields as props when a client component needs them. Never
+send the token to the browser.
+
+### Require identity in a route handler
 
 ```ts
-// app/api/me/route.ts
-import { getUser } from "@/lib/auth";
+import { getIdentity } from "@vercel/passport";
 
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const user = await getUser();
-  if (!user) return new Response("Unauthorized", { status: 401 });
-  return Response.json({ id: user.id, email: user.email, name: user.name });
+  try {
+    const identity = await getIdentity();
+
+    if (!identity) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+
+    return Response.json({
+      issuer: identity.payload.iss,
+      subject: identity.subject,
+      email: identity.email,
+      name: identity.name,
+    });
+  } catch {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
 }
 ```
 
-### Per-user data
+Put repeated authorization checks in a shared server-side helper and call it
+from each protected route.
 
-Key records by `user.id`. If the project also has the vercel-blob-db skill
-(a data layer on Vercel Blob), they compose directly:
+### Store per-user data
 
 ```ts
-// app/actions.ts
 "use server";
-import { requireUser } from "@/lib/auth";
+
+import { getIdentity } from "@vercel/passport";
 import { getCollection } from "@/lib/blob-db";
 
 type Preferences = { theme: string };
 const preferences = getCollection<Preferences>("preferences");
 
 export async function saveTheme(theme: string) {
-  const user = await requireUser();
-  await preferences.set(user.id, { theme }); // one record per user
+  const identity = await getIdentity();
+  if (!identity) throw new Error("Unauthorized");
+
+  await preferences.set(identity.subject, { theme });
 }
 ```
 
-### Simple authorization (allowlist or claim check)
+For multiple Passport issuers, store the issuer and subject as a compound key
+instead of using the subject alone.
 
-Passport answers "who is this?"; the app decides "what may they do?". Keep it
-simple:
+### Apply application-level authorization
 
 ```ts
-import { requireUser } from "@/lib/auth";
+import { getIdentity } from "@vercel/passport";
 
-const ADMINS = new Set(["alice@example.com", "bob@example.com"]);
+const ADMIN_SUBJECTS = new Set([
+  "owner:team_123:connector:scl_123:principal:user_123",
+]);
 
 export async function requireAdmin() {
-  const user = await requireUser();
-  if (!user.email || !ADMINS.has(user.email)) {
+  const identity = await getIdentity();
+
+  if (!identity || !ADMIN_SUBJECTS.has(identity.subject)) {
     throw new Error("Admins only");
   }
-  return user;
+
+  return identity;
 }
 ```
 
-If the identity provider sends roles or groups, they appear in `user.claims`
-— inspect `JSON.stringify(user.claims)` once in dev to see what's available.
+Passport decides who may reach the deployment. Application code decides what
+that visitor may do inside it.
+
+### Pass a request explicitly
+
+If the runtime does not expose Vercel's request context, pass the request or
+headers:
+
+```ts
+const identity = await getIdentity(request);
+```
+
+This works with a standard `Request` and other request-like objects supported
+by the package.
+
+### Verify a token forwarded to another backend
+
+Do not trust a forwarded Passport header by itself. Verify the token in the
+receiving service:
+
+```ts
+import { verifyIdentity } from "@vercel/passport";
+
+const identity = await verifyIdentity(request, {
+  ownerId: "team_123",
+  projectId: "prj_123",
+  environment: "production",
+});
+```
+
+Use the source project's expected owner, project, and environment.
 
 ## Rules
 
-- Never build a second authentication system (NextAuth, Clerk, Better Auth,
-  password forms, magic links) into an app behind Passport. One exception:
-  if the task explicitly targets a public-facing app on a non-Enterprise
-  project, Passport doesn't apply — say so instead of forcing it.
-- Read identity only through `lib/auth.ts`. Don't parse the header or the
-  `_vercel_passport` cookie by hand elsewhere.
-- Never key data by email or name; use `user.id`.
-- Never send the raw token to the browser or log it. Pass plain fields
-  (`id`, `name`, `email`) to client components instead.
-- Trust the header only inside the app itself. If you forward requests to
-  another service, that service must not blindly trust a header it didn't
-  receive from Vercel.
+- Use `@vercel/passport`. Do not decode the JWT, read the
+  `_vercel_passport` cookie, or parse the header by hand.
+- Never add NextAuth, Clerk, Better Auth, password forms, magic links, or
+  another login system to a Passport-protected application.
+- Keep identity reads server-side.
+- Use `subject`, or issuer plus subject, for application data.
+- Treat email, name, groups, and other profile claims as optional.
+- Never send the raw token to the browser or write it to logs.
+- Use `verifyIdentity()` when another backend receives a forwarded token.
+- Do not use a Next.js proxy function to bypass Passport. Passport makes its
+  access decision before proxy functions run, and identity verification may
+  require a network request.
+- Use a Protection Bypass for Automation secret for webhooks, cron jobs, or
+  other machine requests that must reach a protected deployment without a
+  Passport session. Those requests do not have a Passport identity.
 
-## Troubleshooting
+## Troubleshoot
 
-- `getUser()` is null locally: set `PASSPORT_DEV_USER` in `.env.local` and
-  restart the dev server.
-- `getUser()` is null on the deployment: Passport isn't enabled for that
-  project (Project Settings > Passport), or the visitor reached the app
-  through an unprotected URL.
-- `email`/`name` are null on real users: the identity provider isn't sharing
-  profile claims — the IdP application needs the `profile`/`email` scopes.
-  Design UI to work with nulls either way.
-- Passport toggle missing in settings: the project isn't on an Enterprise
-  team with Passport access — ask the team admin (or the hackathon
-  organizers).
+- If `getIdentity()` returns `null` on Vercel, confirm that the request reached
+  a Passport-protected deployment. Automation bypass requests can legitimately
+  have no Passport identity.
+- If the runtime does not expose Vercel request context, pass the request or
+  headers explicitly.
+- If verification fails, return an unauthorized response. Confirm that code
+  reads the Vercel-injected header and do not log the token.
+- If profile or group claims are missing, confirm that the identity provider
+  returns them and that the Connector requests the required scopes. Start a
+  new Passport session after changing scopes.
+- If Passport settings are unavailable, ask the Enterprise team administrator
+  to enable or configure Passport.
 
-## Limits, honestly
-
-Passport is authentication only — roles and permissions are the app's job
-(see the authorization recipe). It is an Enterprise feature configured by
-team admins, not something code can enable. Profile claims depend entirely
-on the identity provider. And this skill targets Next.js App Router apps;
-for other frameworks, `getUserFromRequest(request)` works anywhere a
-standard `Request` exists.
+Passport handles authentication. Keep roles, permissions, and record-level
+authorization in the application.

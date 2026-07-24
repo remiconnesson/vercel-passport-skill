@@ -1,80 +1,71 @@
 # vercel-passport-skill
 
-An agent skill that adds the auth layer to vibecoded apps deployed behind
-[Vercel Passport](https://vercel.com/docs/passport). Passport authenticates
-every visitor against your organization's identity provider before requests
-reach the app — so there is no login page, OAuth flow, or password storage to
-build. The skill teaches coding agents exactly that: don't build auth, read
-the verified identity instead.
+An agent skill for applications deployed behind
+[Vercel Passport](https://vercel.com/docs/passport/read-identity). Passport
+authenticates visitors before requests reach the application. The skill teaches
+coding agents to use the official `@vercel/passport` package, read verified
+identity in server-side code, and keep application authorization separate.
 
-## Install (participants)
+## Install
 
-Inside your project repo:
+Inside an application repository:
 
 ```bash
 npx skills add remiconnesson/vercel-passport-skill
 ```
 
-This installs the `vercel-passport` skill for the coding agents you use
-(Claude Code, GitHub Copilot, Cursor, Codex, and many others via
-[skills.sh](https://skills.sh)). Then ask your agent:
+Then ask the coding agent:
 
-> Show who's signed in on the home page and store their theme preference.
+> Show who is signed in on the home page and store their theme preference.
 > Use the vercel-passport skill.
 
-The agent copies `lib/auth.ts` into your project and builds on the verified
-identity.
-
-## What you get
+The agent installs `@vercel/passport` in the application and uses
+`getIdentity()`:
 
 ```ts
-import { getUser, requireUser } from "@/lib/auth";
+import { getIdentity } from "@vercel/passport";
 
-const user = await getUser();     // { id, email, name, claims } | null
-const user = await requireUser(); // throws when absent
+const identity = await getIdentity();
 
-user.id; // stable per-visitor id — key your data by this
+identity?.subject;          // Stable identifier for one Passport issuer
+identity?.payload.iss;      // Persist with subject for multiple issuers
+identity?.externalSubject;  // Identity provider user id
+identity?.email;            // Optional profile field
+identity?.name;             // Optional profile field
 ```
 
-Under the hood:
+The package verifies request tokens against Vercel's Passport JWKS. The skill
+does not copy a JWT decoder into the application.
 
-- Vercel Passport authenticates visitors at the platform edge and injects a
-  signed identity token into the `x-vercel-oidc-passport-token` header.
-  Vercel strips client-supplied values for that header, so the app can trust
-  it.
-- `lib/auth.ts` (~140 lines, zero dependencies) decodes the token and exposes
-  a typed user. `external_sub` becomes `user.id`; email/name are null-safe
-  because identity providers don't always share them.
-- Local dev fallback: `PASSPORT_DEV_USER=you@example.com` in `.env.local`
-  simulates a signed-in user. Disabled in production builds by construction.
+## Local development
 
-Pairs with [vercel-blob-data-layer](https://github.com/remiconnesson/vercel-blob-data-layer):
-`profiles.set(user.id, {...})` gives you per-user persistence with no
-database either.
+Passport runs in Vercel's network. On localhost, `getIdentity()` supplies a
+Passport-shaped development identity by default. Set `VERCEL_PASSPORT_DEV=0`
+to test an unauthenticated request. Use the `VERCEL_PASSPORT_DEV_*` variables
+documented in the skill to customize the fixture.
+
+Use a Passport-protected deployment to test the real identity provider
+redirect, session cookie, request header, and verified claims.
 
 ## Requirements
 
-- A Vercel **Enterprise** team with Passport enabled on the project
-  (Project Settings > Passport, or a team default). Hackathon organizers
-  typically preconfigure this — participants don't touch it.
-- Next.js App Router for `getUser()`/`requireUser()`;
-  `getUserFromRequest(request)` works in any framework with standard
-  `Request` objects.
+- A Vercel Enterprise team with Passport enabled
+- Node.js 20 or newer, as required by `@vercel/passport`
+- Server-side application code that can call `getIdentity()`
 
-## Repo layout
+## Repository layout
 
-```
-skills/vercel-passport/SKILL.md         instructions your agent follows
-skills/vercel-passport/assets/auth.ts   the auth helper that gets copied into projects
-tests/auth-test.ts                      local test of the helper (crafted JWTs, no infra)
+```text
+skills/vercel-passport/SKILL.md   Instructions followed by the coding agent
+tests/passport-test.ts            Checks the official package behavior used by the skill
 ```
 
 ## Development
 
 ```bash
 pnpm install
-pnpm typecheck   # checks auth.ts against next/headers types
-pnpm test        # exercises token parsing, dev fallback, prod safety
+pnpm typecheck
+pnpm test
 ```
 
 MIT license.
